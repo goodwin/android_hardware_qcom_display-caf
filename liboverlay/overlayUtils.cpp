@@ -86,7 +86,10 @@ const char* const Res::barrierFile =
 namespace utils {
 //------------------ defines -----------------------------
 #define FB_DEVICE_TEMPLATE "/dev/graphics/fb%u"
-#define NUM_FB_DEVICES 3
+
+/* 2 FB_DEVICES on Nozomi; HDMI is disabled for now, therefore 1 */
+
+#define NUM_FB_DEVICES 1
 
 //--------------------------------------------------------
 FrameBufferInfo::FrameBufferInfo() {
