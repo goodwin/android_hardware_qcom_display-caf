@@ -239,16 +239,14 @@ void setListStats(hwc_context_t *ctx,
         //We disregard FB being skip for now! so the else if
         } else if (isSkipLayer(&list->hwLayers[i])) {
             ctx->listStats[dpy].skipCount++;
-        }
-
-        if(!ctx->listStats[dpy].needsAlphaScale)
-            ctx->listStats[dpy].needsAlphaScale = isAlphaScaled(layer);
-
-        if (UNLIKELY(isYuvBuffer(hnd))) {
+        } else if (UNLIKELY(isYuvBuffer(hnd))) {
             int& yuvCount = ctx->listStats[dpy].yuvCount;
             ctx->listStats[dpy].yuvIndices[yuvCount] = i;
             yuvCount++;
         }
+
+        if(!ctx->listStats[dpy].needsAlphaScale)
+            ctx->listStats[dpy].needsAlphaScale = isAlphaScaled(layer);
     }
 }
 
@@ -394,11 +392,11 @@ int hwc_sync(hwc_context_t *ctx, hwc_display_contents_1_t* list, int dpy,
         if(list->hwLayers[i].compositionType == HWC_OVERLAY ||
            list->hwLayers[i].compositionType == HWC_FRAMEBUFFER_TARGET) {
             //Close the acquireFenceFds
-            if(list->hwLayers[i].acquireFenceFd > 0) {
+            if(list->hwLayers[i].acquireFenceFd >= 0) {
                 close(list->hwLayers[i].acquireFenceFd);
                 list->hwLayers[i].acquireFenceFd = -1;
             }
-            if(fd > 0) {
+            if(fd >= 0) {
                 close(fd);
                 fd = -1;
             }
