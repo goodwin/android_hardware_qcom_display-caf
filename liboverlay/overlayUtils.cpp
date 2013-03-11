@@ -90,9 +90,9 @@ namespace utils {
 //------------------ defines -----------------------------
 #define FB_DEVICE_TEMPLATE "/dev/graphics/fb%u"
 
-/* 2 FB_DEVICES on Nozomi; HDMI is disabled for now, therefore 1 */
+/* 2 FB_DEVICES on Nozomi */
 
-#define NUM_FB_DEVICES 1
+#define NUM_FB_DEVICES 2
 
 //--------------------------------------------------------
 FrameBufferInfo::FrameBufferInfo() {
