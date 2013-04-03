@@ -90,6 +90,10 @@ C2D_STATUS (*LINK_c2dGetDriverCapabilities) ( C2D_DRIVER_INFO * driver_info);
 /* create a fence fd for the timestamp */
 C2D_STATUS (*LINK_c2dCreateFenceFD) ( uint32 target_id, c2d_ts_handle timestamp,
                                                             int32 *fd);
+
+C2D_STATUS (*LINK_c2dFillSurface) ( uint32 surface_id, uint32 fill_color,
+                                    C2D_RECT * fill_rect);
+
 /******************************************************************************/
 
 #if defined(COPYBIT_Z180)
@@ -674,6 +678,28 @@ static int finish_copybit(struct copybit_device_t *dev)
     return status;
 }
 
+static int clear_copybit(struct copybit_device_t *dev,
+                         struct copybit_image_t const *buf,
+                         struct copybit_rect_t *rect)
+{
+    int ret = 0;
+    int flags = FLAGS_PREMULTIPLIED_ALPHA;
+    int mapped_dst_idx = -1;
+    struct copybit_context_t* ctx = (struct copybit_context_t*)dev;
+    C2D_RECT c2drect = {rect->l, rect->t, rect->r - rect->l, rect->b - rect->t};
+    ret = set_image(ctx, ctx->dst[RGB_SURFACE], buf,
+                       (eC2DFlags)flags, mapped_dst_idx);
+    if(ret) {
+        ALOGE("%s: set_image error", __FUNCTION__);
+        unmap_gpuaddr(ctx, mapped_dst_idx);
+        return COPYBIT_FAILURE;
+    }
+
+    ret = LINK_c2dFillSurface(ctx->dst[RGB_SURFACE], 0x0, &c2drect);
+    return ret;
+}
+
+
 /** setup rectangles */
 static void set_rects(struct copybit_context_t *ctx,
                       C2D_OBJECT *c2dObject,
@@ -1233,10 +1259,11 @@ static int stretch_copybit_internal(
             return status;
         }
 
-        // Flush the cache
+        // Clean the cache
         IMemAlloc* memalloc = sAlloc->getAllocator(src_hnd->flags);
         if (memalloc->clean_buffer((void *)(src_hnd->base), src_hnd->size,
-                                   src_hnd->offset, src_hnd->fd)) {
+                                   src_hnd->offset, src_hnd->fd,
+                                   gralloc::CACHE_CLEAN)) {
             ALOGE("%s: clean_buffer failed", __FUNCTION__);
             delete_handle(dst_hnd);
             delete_handle(src_hnd);
@@ -1258,8 +1285,7 @@ static int stretch_copybit_internal(
         return COPYBIT_FAILURE;
     }
 
-    src_surface.config_mask = C2D_NO_BILINEAR_BIT | C2D_NO_ANTIALIASING_BIT |
-                              ctx->config_mask;
+    src_surface.config_mask = C2D_NO_ANTIALIASING_BIT | ctx->config_mask;
     src_surface.global_alpha = ctx->src_global_alpha;
     if (enableBlend) {
         if(src_surface.config_mask & C2D_GLOBAL_ALPHA_BIT) {
@@ -1272,12 +1298,6 @@ static int stretch_copybit_internal(
                 unmap_gpuaddr(ctx, mapped_src_idx);
                 return COPYBIT_FAILURE;
             }
-        } else {
-            int c2d_format = get_format(src->format);
-            if(is_alpha(c2d_format))
-                src_surface.config_mask &= ~C2D_ALPHA_BLEND_NONE;
-            else
-                src_surface.config_mask |= C2D_ALPHA_BLEND_NONE;
         }
     } else {
         src_surface.config_mask |= C2D_ALPHA_BLEND_NONE;
@@ -1324,10 +1344,11 @@ static int stretch_copybit_internal(
             unmap_gpuaddr(ctx, mapped_src_idx);
             return status;
         }
-        // Invalidate the cache.
+        // Clean the cache.
         IMemAlloc* memalloc = sAlloc->getAllocator(dst_hnd->flags);
         memalloc->clean_buffer((void *)(dst_hnd->base), dst_hnd->size,
-                               dst_hnd->offset, dst_hnd->fd);
+                               dst_hnd->offset, dst_hnd->fd,
+                               gralloc::CACHE_CLEAN);
     }
     delete_handle(dst_hnd);
     delete_handle(src_hnd);
@@ -1476,11 +1497,14 @@ static int open_copybit(const struct hw_module_t* module, const char* name,
                                            "c2dGetDriverCapabilities");
     *(void **)&LINK_c2dCreateFenceFD = ::dlsym(ctx->libc2d2,
                                            "c2dCreateFenceFD");
+    *(void **)&LINK_c2dFillSurface = ::dlsym(ctx->libc2d2,
+                                           "c2dFillSurface");
 
     if (!LINK_c2dCreateSurface || !LINK_c2dUpdateSurface || !LINK_c2dReadSurface
         || !LINK_c2dDraw || !LINK_c2dFlush || !LINK_c2dWaitTimestamp ||
         !LINK_c2dFinish  || !LINK_c2dDestroySurface ||
-        !LINK_c2dGetDriverCapabilities || !LINK_c2dCreateFenceFD) {
+        !LINK_c2dGetDriverCapabilities || !LINK_c2dCreateFenceFD ||
+        !LINK_c2dFillSurface) {
         ALOGE("%s: dlsym ERROR", __FUNCTION__);
         clean_up(ctx);
         status = COPYBIT_FAILURE;
@@ -1498,6 +1522,7 @@ static int open_copybit(const struct hw_module_t* module, const char* name,
     ctx->device.stretch = stretch_copybit;
     ctx->device.finish = finish_copybit;
     ctx->device.flush_get_fence = flush_get_fence_copybit;
+    ctx->device.clear = clear_copybit;
 
     /* Create RGB Surface */
     surfDefinition.buffer = (void*)0xdddddddd;

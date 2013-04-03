@@ -27,13 +27,13 @@
 #include <gr.h>
 #include <gralloc_priv.h>
 #include <utils/String8.h>
+#include "qdMetaData.h"
+#include <overlayUtils.h>
 
 #define ALIGN_TO(x, align)     (((x) + ((align)-1)) & ~((align)-1))
 #define LIKELY( exp )       (__builtin_expect( (exp) != 0, true  ))
 #define UNLIKELY( exp )     (__builtin_expect( (exp) != 0, false ))
-#define FINAL_TRANSFORM_MASK 0x000F
-#define MAX_NUM_DISPLAYS 4 //Yes, this is ambitious
-#define MAX_NUM_LAYERS 32
+#define MAX_NUM_LAYERS 32 //includes fb layer
 #define MAX_DISPLAY_DIM 2048
 
 // For support of virtual displays
@@ -42,10 +42,13 @@
 
 //Fwrd decls
 struct hwc_context_t;
-struct framebuffer_device_t;
+
+namespace ovutils = overlay::utils;
 
 namespace overlay {
 class Overlay;
+class Rotator;
+class RotMgr;
 }
 
 namespace qhwc {
@@ -53,6 +56,7 @@ namespace qhwc {
 class QueuedBufferStore;
 class ExternalDisplay;
 class IFBUpdate;
+class IVideoOverlay;
 class MDPComp;
 class CopyBit;
 
@@ -88,6 +92,7 @@ struct ListStats {
     int yuvCount;
     int yuvIndices[MAX_NUM_LAYERS];
     bool needsAlphaScale;
+    bool preMultipliedAlpha;
 };
 
 struct LayerProp {
@@ -121,9 +126,6 @@ class LayerCache {
 
 };
 
-
-
-
 // -----------------------------------------------------------------------------
 // Utility functions - implemented in hwc_utils.cpp
 void dumpLayer(hwc_layer_1_t const* l);
@@ -140,6 +142,7 @@ bool isSecuring(hwc_context_t* ctx);
 bool isSecureModePolicy(int mdpVersion);
 bool isExternalActive(hwc_context_t* ctx);
 bool needsScaling(hwc_layer_1_t const* layer);
+bool isAlphaPresent(hwc_layer_1_t const* layer);
 int hwc_vsync_control(hwc_context_t* ctx, int dpy, int enable);
 
 //Helper function to dump logs
@@ -154,7 +157,28 @@ void closeAcquireFds(hwc_display_contents_1_t* list);
 
 //Sync point impl.
 int hwc_sync(hwc_context_t *ctx, hwc_display_contents_1_t* list, int dpy,
-                                                    int fd);
+        int fd);
+
+//Trims a layer's source crop which is outside of screen boundary.
+void trimLayer(hwc_context_t *ctx, const int& dpy, const int& transform,
+        hwc_rect_t& crop, hwc_rect_t& dst);
+
+//Sets appropriate mdp flags for a layer.
+void setMdpFlags(hwc_layer_1_t *layer,
+        ovutils::eMdpFlags &mdpFlags,
+        int rotDownscale = 0);
+
+//Routine to configure low resolution panels (<= 2048 width)
+int configureLowRes(hwc_context_t *ctx, hwc_layer_1_t *layer, const int& dpy,
+        ovutils::eMdpFlags& mdpFlags, const ovutils::eZorder& z,
+        const ovutils::eIsFg& isFg, const ovutils::eDest& dest,
+        overlay::Rotator **rot);
+
+//Routine to configure high resolution panels (> 2048 width)
+int configureHighRes(hwc_context_t *ctx, hwc_layer_1_t *layer, const int& dpy,
+        ovutils::eMdpFlags& mdpFlags, const ovutils::eZorder& z,
+        const ovutils::eIsFg& isFg, const ovutils::eDest& lDest,
+        const ovutils::eDest& rDest, overlay::Rotator **rot);
 
 // Inline utility functions
 static inline bool isSkipLayer(const hwc_layer_1_t* l) {
@@ -237,17 +261,18 @@ struct vsync_state {
 struct hwc_context_t {
     hwc_composer_device_1_t device;
     const hwc_procs_t* proc;
-    //Framebuffer device
-    framebuffer_device_t *mFbDev;
 
     //CopyBit objects
     qhwc::CopyBit *mCopyBit[MAX_DISPLAYS];
 
     //Overlay object - NULL for non overlay devices
     overlay::Overlay *mOverlay;
+    //Holds a few rot objects
+    overlay::RotMgr *mRotMgr;
 
     //Primary and external FB updater
     qhwc::IFBUpdate *mFBUpdate[MAX_DISPLAYS];
+    qhwc::IVideoOverlay *mVidOv[MAX_DISPLAYS];
     // External display related information
     qhwc::ExternalDisplay *mExtDisplay;
     qhwc::MDPInfo mMDP;
@@ -273,6 +298,7 @@ struct hwc_context_t {
     bool mDMAInUse;
 };
 
+namespace qhwc {
 static inline bool isSkipPresent (hwc_context_t *ctx, int dpy) {
     return  ctx->listStats[dpy].skipCount;
 }
@@ -280,5 +306,6 @@ static inline bool isSkipPresent (hwc_context_t *ctx, int dpy) {
 static inline bool isYuvPresent (hwc_context_t *ctx, int dpy) {
     return  ctx->listStats[dpy].yuvCount;
 }
+};
 
 #endif //HWC_UTILS_H

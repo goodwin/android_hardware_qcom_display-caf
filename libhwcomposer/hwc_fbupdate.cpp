@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2010 The Android Open Source Project
- * Copyright (C) 2012, The Linux Foundation. All rights reserved.
+ * Copyright (C) 2012-2013, The Linux Foundation. All rights reserved.
  *
  * Not a Contribution, Apache license notifications and license are
  * retained for attribution purposes only.
@@ -20,8 +20,8 @@
 
 #define DEBUG_FBUPDATE 0
 #include <gralloc_priv.h>
-#include <fb_priv.h>
 #include "hwc_fbupdate.h"
+#include "hwc_video.h"
 
 namespace qhwc {
 
@@ -38,6 +38,16 @@ inline void IFBUpdate::reset() {
     mModeOn = false;
 }
 
+bool IFBUpdate::needFbUpdate(hwc_context_t *ctx,
+        const hwc_display_contents_1_t *list, int dpy) {
+    // if Video Overlay is on and and YUV layers are passed through overlay
+    // , no need to configure FB layer.
+    if(ctx->mVidOv[dpy]->isModeOn() &&
+        (ctx->listStats[dpy].yuvCount == ctx->listStats[dpy].numAppLayers))
+        return false;
+
+    return true;
+}
 //================= Low res====================================
 FBUpdateLowRes::FBUpdateLowRes(const int& dpy): IFBUpdate(dpy) {}
 
@@ -65,13 +75,15 @@ bool FBUpdateLowRes::configure(hwc_context_t *ctx,
     bool ret = false;
     hwc_layer_1_t *layer = &list->hwLayers[list->numHwLayers - 1];
     if (LIKELY(ctx->mOverlay)) {
+        // When Video overlay is in use and there are no UI layers to
+        // be composed to FB , no need to configure FbUpdate.
+        if(!needFbUpdate(ctx, list, mDpy))
+            return false;
+
         overlay::Overlay& ov = *(ctx->mOverlay);
         private_handle_t *hnd = (private_handle_t *)layer->handle;
-        if (!hnd) {
-            ALOGE("%s:NULL private handle for layer!", __FUNCTION__);
-            return false;
-        }
-        ovutils::Whf info(hnd->width, hnd->height, hnd->format, hnd->size);
+        ovutils::Whf info(hnd->width, hnd->height,
+                ovutils::getMdpFormat(hnd->format), hnd->size);
 
         //Request an RGB pipe
         ovutils::eDest dest = ov.nextPipe(ovutils::OV_MDP_PIPE_RGB, mDpy);
@@ -82,11 +94,20 @@ bool FBUpdateLowRes::configure(hwc_context_t *ctx,
         mDest = dest;
 
         ovutils::eMdpFlags mdpFlags = ovutils::OV_MDP_FLAGS_NONE;
+        // If any of the layers has pre-multiplied alpha, set Pre multiplied
+        // Flag as the compositied output is alpha pre-multiplied.
+        if(ctx->listStats[mDpy].preMultipliedAlpha == true)
+               ovutils::setMdpFlags(mdpFlags, ovutils::OV_MDP_BLEND_FG_PREMULT);
+
+        ovutils::eZorder z_order =
+              ctx->mVidOv[mDpy]->isModeOn()?ovutils::ZORDER_1:ovutils::ZORDER_0;
+        ovutils::eIsFg is_fg =
+           ctx->mVidOv[mDpy]->isModeOn()? ovutils::IS_FG_OFF:ovutils::IS_FG_SET;
 
         ovutils::PipeArgs parg(mdpFlags,
                 info,
-                ovutils::ZORDER_0,
-                ovutils::IS_FG_SET,
+                z_order,
+                is_fg,
                 ovutils::ROT_FLAGS_NONE);
         ov.setSource(parg, dest);
 
@@ -165,13 +186,15 @@ bool FBUpdateHighRes::configure(hwc_context_t *ctx,
     bool ret = false;
     hwc_layer_1_t *layer = &list->hwLayers[list->numHwLayers - 1];
     if (LIKELY(ctx->mOverlay)) {
+        // When Video overlay is in use and there are no UI layers to
+        // be composed to FB , no need to configure FbUpdate.
+        if(!needFbUpdate(ctx, list, mDpy))
+            return false;
+
         overlay::Overlay& ov = *(ctx->mOverlay);
         private_handle_t *hnd = (private_handle_t *)layer->handle;
-        if (!hnd) {
-            ALOGE("%s:NULL private handle for layer!", __FUNCTION__);
-            return false;
-        }
-        ovutils::Whf info(hnd->width, hnd->height, hnd->format, hnd->size);
+        ovutils::Whf info(hnd->width, hnd->height,
+                ovutils::getMdpFormat(hnd->format), hnd->size);
 
         //Request left RGB pipe
         ovutils::eDest destL = ov.nextPipe(ovutils::OV_MDP_PIPE_RGB, mDpy);
@@ -188,11 +211,20 @@ bool FBUpdateHighRes::configure(hwc_context_t *ctx,
         mDestRight = destR;
 
         ovutils::eMdpFlags mdpFlagsL = ovutils::OV_MDP_FLAGS_NONE;
+        //If any layer has pre-multiplied alpha, set Pre multiplied
+        //Flag as the compositied output is alpha pre-multiplied.
+        if(ctx->listStats[mDpy].preMultipliedAlpha == true)
+            ovutils::setMdpFlags(mdpFlagsL, ovutils::OV_MDP_BLEND_FG_PREMULT);
+
+        ovutils::eZorder z_order =
+              ctx->mVidOv[mDpy]->isModeOn()?ovutils::ZORDER_1:ovutils::ZORDER_0;
+        ovutils::eIsFg is_fg =
+           ctx->mVidOv[mDpy]->isModeOn()? ovutils::IS_FG_OFF:ovutils::IS_FG_SET;
 
         ovutils::PipeArgs pargL(mdpFlagsL,
                 info,
-                ovutils::ZORDER_0,
-                ovutils::IS_FG_SET,
+                z_order,
+                is_fg,
                 ovutils::ROT_FLAGS_NONE);
         ov.setSource(pargL, destL);
 
@@ -200,8 +232,8 @@ bool FBUpdateHighRes::configure(hwc_context_t *ctx,
         ovutils::setMdpFlags(mdpFlagsR, ovutils::OV_MDSS_MDP_RIGHT_MIXER);
         ovutils::PipeArgs pargR(mdpFlagsR,
                 info,
-                ovutils::ZORDER_0,
-                ovutils::IS_FG_SET,
+                z_order,
+                is_fg,
                 ovutils::ROT_FLAGS_NONE);
         ov.setSource(pargR, destR);
 
@@ -227,12 +259,16 @@ bool FBUpdateHighRes::configure(hwc_context_t *ctx,
         hwc_rect_t displayFrame = sourceCrop;
         //For FB left, top will always be 0
         //That should also be the case if using 2 mixers for single display
-        ovutils::Dim dpos(displayFrame.left,
+        ovutils::Dim dposL(displayFrame.left,
                 displayFrame.top,
                 (displayFrame.right - displayFrame.left) / 2,
                 displayFrame.bottom - displayFrame.top);
-        ov.setPosition(dpos, destL);
-        ov.setPosition(dpos, destR);
+        ov.setPosition(dposL, destL);
+        ovutils::Dim dposR(0,
+                displayFrame.top,
+                (displayFrame.right - displayFrame.left) / 2,
+                displayFrame.bottom - displayFrame.top);
+        ov.setPosition(dposR, destR);
 
         ret = true;
         if (!ov.commit(destL)) {
